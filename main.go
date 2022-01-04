@@ -61,25 +61,10 @@ var runCmd = &cli.Command{
 	Usage: "start venus-gateway daemon",
 	Flags: []cli.Flag{
 		&cli.StringFlag{Name: "auth-url", Usage: "venus auth url"},
-		&cli.StringFlag{Name: "jaeger-proxy", EnvVars: []string{"VENUS_GATEWAY_JAEGER_PROXY"}, Hidden: true},
-		&cli.Float64Flag{Name: "trace-sampler", EnvVars: []string{"VENUS_GATEWAY_TRACE_SAMPLER"}, Value: 1.0, Hidden: true},
-		&cli.StringFlag{Name: "trace-node-name", Value: "venus-gateway", Hidden: true},
+		&cli.StringFlag{Name: "jaeger-proxy", EnvVars: []string{"VENUS_GATEWAY_JAEGER_PROXY"}},
+		&cli.Float64Flag{Name: "trace-sampler", EnvVars: []string{"VENUS_GATEWAY_TRACE_SAMPLER"}, Value: 1.0},
+		&cli.StringFlag{Name: "trace-node-name", Value: "venus-gateway"},
 		&cli.StringFlag{Name: "rate-limit-redis", Hidden: true},
-	},
-	Before: func(c *cli.Context) error {
-		var mCnf = &metrics.TraceConfig{}
-
-		var proxy, sampler, serverName = strings.TrimSpace(c.String("jaeger-proxy")),
-			c.Float64("trace-sampler"),
-			strings.TrimSpace(c.String("trace-node-name"))
-
-		if mCnf.JaegerTracingEnabled = len(proxy) != 0; mCnf.JaegerTracingEnabled {
-			mCnf.ProbabilitySampler, mCnf.JaegerEndpoint, mCnf.ServerName =
-				sampler, proxy, serverName
-		}
-
-		c.Context = context.WithValue(c.Context, "trace-config", mCnf)
-		return nil
 	},
 	Action: func(cctx *cli.Context) error {
 		ctx := cctx.Context
@@ -106,14 +91,13 @@ var runCmd = &cli.Command{
 			RequestTimeout:   time.Second * 30,
 		})
 
-		gatewayAPI := NewGatewayAPI(proofStream, walletStream, marketStream)
+		gatewayAPIImpl := NewGatewayAPI(proofStream, walletStream, marketStream)
 
 		log.Info("Setting up control endpoint at " + address)
 
-		fullAPI := &api.FullStruct{}
-		api.PermissionProxy(gatewayAPI, fullAPI)
+		gatewayAPI := api.PermissionedFullAPI(gatewayAPIImpl)
 
-		rpcServer := jsonrpc.NewServer(jsonrpc.WithProxyBind(jsonrpc.PBField))
+		rpcServer := jsonrpc.NewServer()
 		if cctx.IsSet("rate-limit-redis") {
 			limiter, err := ratelimit.NewRateLimitHandler(cctx.String("rate-limit-redis"), nil,
 				&jwtclient.ValueFromCtx{},
@@ -123,12 +107,13 @@ var runCmd = &cli.Command{
 			if err != nil {
 				return err
 			}
-			var rateLimitAPI api.FullStruct
-			limiter.WarperLimiter(*fullAPI, &rateLimitAPI)
-			fullAPI = &rateLimitAPI
+			var rateLimitAPI api.GatewayFullNodeStruct
+			limiter.ProxyLimitFullAPI(gatewayAPI, &rateLimitAPI)
+			gatewayAPI = &rateLimitAPI
 		}
 
-		rpcServer.Register("Gateway", fullAPI)
+		rpcServer.Register("Gateway", gatewayAPI)
+		rpcServer.Register("VENUS_MARKET", &gatewayAPI.(*api.GatewayFullNodeStruct).IMarketEventStruct)
 
 		mux := mux.NewRouter()
 		mux.Handle("/rpc/v0", rpcServer)
@@ -138,7 +123,16 @@ var runCmd = &cli.Command{
 			&localJwtClient{seckey: seckey}, jwtclient.WarpIJwtAuthClient(cli),
 			mux, logging.Logger("Auth")))
 
-		tCnf := cctx.Context.Value("trace-config").(*metrics.TraceConfig)
+		var tCnf = &metrics.TraceConfig{}
+
+		var proxy, sampler, serverName = strings.TrimSpace(cctx.String("jaeger-proxy")),
+			cctx.Float64("trace-sampler"),
+			strings.TrimSpace(cctx.String("trace-node-name"))
+
+		if tCnf.JaegerTracingEnabled = len(proxy) != 0; tCnf.JaegerTracingEnabled {
+			tCnf.ProbabilitySampler, tCnf.JaegerEndpoint, tCnf.ServerName =
+				sampler, proxy, serverName
+		}
 		if repoter, err := metrics.RegisterJaeger(tCnf.ServerName, tCnf); err != nil {
 			log.Fatalf("register %s JaegerRepoter to %s failed:%s", tCnf.ServerName, tCnf.JaegerEndpoint)
 		} else if repoter != nil {
