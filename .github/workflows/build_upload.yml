@@ -70,6 +70,7 @@ jobs:
           echo "::set-output name=pub_method::$pub_method"
           echo "::set-output name=oss_exists::$oss_exists"
           echo "::set-output name=ftp_exists::$ftp_exists"
+
       - name: show environment
         run: |
           echo bin = ${{github.bin}}
@@ -107,7 +108,7 @@ jobs:
         run: (sudo apt-get update && sudo apt-get install -y clang libssl-dev && which cargo && which rustc) || (curl https://sh.rustup.rs -sSf | sh -s -- -y)
 
       - name: install deps
-        run: sudo apt-get install make ncftp mesa-opencl-icd ocl-icd-opencl-dev gcc git bzr jq pkg-config curl clang build-essential hwloc libhwloc-dev wget -y && sudo apt upgrade -y
+        run: sudo apt-get install make ncftp mesa-opencl-icd ocl-icd-opencl-dev gcc git bzr jq pkg-config curl build-essential hwloc libhwloc-dev wget -y && sudo apt upgrade -y
 
       - name: Build
         run: |
@@ -122,16 +123,6 @@ jobs:
           path: ./${{steps.vars.outputs.bin}}
           type: tar
 
-      - name: release
-        id: release
-        uses: ncipollo/release-action@v1
-        if: ${{ steps.vars.outputs.pub_method=='pushRelease' }}
-        with:
-          artifacts: ${{steps.vars.outputs.artifact_name}}
-          tag: ${{ steps.vars.outputs.github_tag }}
-          commit: ${{ steps.vars.outputs.commit }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: upload ftp
         id: uploadftp
         if: ${{ steps.vars.outputs.ftp_exists == '1' }}
@@ -139,6 +130,7 @@ jobs:
         run: |
           ncftpput -m -R -v -u ${{secrets.FTP_USER}} -p ${{secrets.FTP_PWD}} ${{secrets.FTP_HOST}} ./${{steps.vars.outputs.repo_name}} ./${{steps.vars.outputs.artifact_name}}
           echo "upload file: ${{steps.vars.outputs.artifact_name}} successfully!"
+
       - name: setup oss
         id: setuposs
         if: ${{ steps.vars.outputs.oss_exists == '1' && steps.uploadftp.outcome != 'success' && steps.vars.outputs.pub_method == 'pushTest' }}
@@ -157,6 +149,7 @@ jobs:
           ossutil cp ./${{steps.vars.outputs.artifact_name}} ${{secrets.OSS_BUCKET}}
           export signed_url=`ossutil sign ${{secrets.OSS_BUCKET}}/${{steps.vars.outputs.artifact_name}} --timeout 31104000 | sed -n 1p`
           echo '::set-output name=oss_signed_url::$(signed_url)'
+
       - name: upload artifacts
         if: ${{ steps.vars.outputs.pub_method == 'pushTest' && steps.uploadftp.outcome != 'success' && steps.cposs.outcome != 'success' }}
         continue-on-error: true
